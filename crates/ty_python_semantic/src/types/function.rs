@@ -1293,7 +1293,9 @@ fn check_classinfo_in_isinstance<'db>(
                         protocol_class,
                         function,
                     );
-                } else if function == KnownFunction::IsSubclass {
+                    return;
+                }
+                if function == KnownFunction::IsSubclass {
                     let non_method_members = protocol_class.interface(db).non_method_members(db);
                     if !non_method_members.is_empty() {
                         report_issubclass_check_against_protocol_with_non_method_members(
@@ -1302,26 +1304,17 @@ fn check_classinfo_in_isinstance<'db>(
                             protocol_class,
                             &non_method_members,
                         );
-                    } else {
-                        check_unsafe_overlap_with_protocol(
-                            db,
-                            context,
-                            call_expression,
-                            function,
-                            first_arg_type,
-                            protocol_class,
-                        );
+                        return;
                     }
-                } else {
-                    check_unsafe_overlap_with_protocol(
-                        db,
-                        context,
-                        call_expression,
-                        function,
-                        first_arg_type,
-                        protocol_class,
-                    );
                 }
+                check_unsafe_overlap_with_protocol(
+                    db,
+                    context,
+                    call_expression,
+                    function,
+                    &first_arg_type,
+                    protocol_class,
+                );
             }
         }
         Type::SpecialForm(SpecialFormType::Any) if function == KnownFunction::IsInstance => {
@@ -1371,29 +1364,38 @@ fn check_classinfo_in_isinstance<'db>(
 /// with a runtime-checkable protocol.
 ///
 /// A type `X` unsafely overlaps with a protocol `P` if `X` is not assignable to `P`,
-/// but `X` has all the same member names as `P` (i.e., `X` is assignable to the
-/// "type-erased" version of `P` where all members have type `Any`).
+/// but all members of `P` are available as attributes on `X` (i.e., `X` is assignable
+/// to the "type-erased" version of `P` where all members have type `Any`).
 fn check_unsafe_overlap_with_protocol<'db>(
     db: &'db dyn Db,
     context: &InferContext<'db, '_>,
     call_expression: &ast::ExprCall,
     function: KnownFunction,
-    first_arg_type: Type<'db>,
+    first_arg_type: &Type<'db>,
     protocol_class: ProtocolClass<'db>,
 ) {
     let protocol_interface = protocol_class.interface(db);
     let protocol_instance_type = Type::instance(db, *protocol_class);
 
-    // Determine the "subject types" to check. For isinstance, the subject is the
-    // first argument type directly. For issubclass, we need the instance type of the class.
-    let subject_types = collect_subject_types(db, function, first_arg_type);
+    // If the first argument is a union, each element is checked individually,
+    // since the spec states that if any element of a union unsafely overlaps
+    // with a protocol, the whole union unsafely overlaps.
+    let types_to_check = match first_arg_type {
+        Type::Union(union) => union.elements(db),
+        other => std::slice::from_ref(other),
+    };
 
-    for subject_type in subject_types {
-        // Skip dynamic types — we can't meaningfully check overlap.
-        if subject_type.is_dynamic()
-            || subject_type.is_never()
-            || subject_type.is_assignable_to(db, protocol_instance_type)
-        {
+    for subject_type in types_to_check {
+        let subject_type = if function == KnownFunction::IsSubclass {
+            let Some(instance_type) = subject_type.to_instance(db) else {
+                continue;
+            };
+            instance_type
+        } else {
+            *subject_type
+        };
+
+        if subject_type.is_assignable_to(db, protocol_instance_type) {
             continue;
         }
 
@@ -1410,50 +1412,8 @@ fn check_unsafe_overlap_with_protocol<'db>(
                 protocol_class,
                 function,
             );
-            // Report only once per call, even if multiple union elements overlap.
-            return;
         }
     }
-}
-
-/// Collect the "subject types" to check against a protocol for unsafe overlap.
-///
-/// For `isinstance(x, P)`, the subject is the type of `x`.
-/// For `issubclass(C, P)`, the subject is the instance type of `C`.
-///
-/// If the first argument is a union, each element is checked individually,
-/// since the spec states that if any element of a union unsafely overlaps
-/// with a protocol, the whole union unsafely overlaps.
-fn collect_subject_types<'db>(
-    db: &'db dyn Db,
-    function: KnownFunction,
-    first_arg_type: Type<'db>,
-) -> Vec<Type<'db>> {
-    let mut result = Vec::new();
-
-    let types_to_check: Vec<Type<'db>> = match first_arg_type {
-        Type::Union(union) => union.elements(db).to_vec(),
-        other => vec![other],
-    };
-
-    for ty in types_to_check {
-        match function {
-            KnownFunction::IsInstance => {
-                result.push(ty);
-            }
-            KnownFunction::IsSubclass => {
-                // For issubclass, extract the instance type from the class type.
-                if let Type::ClassLiteral(class) = ty {
-                    result.push(Type::instance(db, class.default_specialization(db)));
-                }
-                // For `type` or other class representations, we can't determine
-                // the concrete instance type, so we skip the check.
-            }
-            _ => {}
-        }
-    }
-
-    result
 }
 
 /// Report an error if a `types.UnionType` instance passed to `isinstance()`/`issubclass()`

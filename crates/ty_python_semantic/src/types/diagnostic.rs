@@ -903,11 +903,11 @@ declare_lint! {
     ///
     /// ## Why is this bad?
     /// A type `X` unsafely overlaps with a protocol `P` if `X` is not
-    /// assignable to `P`, but `X` has all the same members as `P` (just with
-    /// incompatible types). In this case, `isinstance()` would return `True`
-    /// at runtime (since the runtime check only verifies the presence of
-    /// members, not their types), but the type checker cannot safely narrow
-    /// the type.
+    /// assignable to `P`, but all members of `P` are available as attributes on
+    /// `X` (just with incompatible types). In this case, `isinstance()` would
+    /// return `True` at runtime (since the runtime check only verifies the
+    /// presence of members, not their types), but the type checker cannot safely
+    /// narrow the type.
     ///
     /// ## Examples
     /// ```python
@@ -4364,19 +4364,23 @@ pub(crate) fn report_unsafe_isinstance_narrowing<'db>(
     let function_name = function.name();
     let subject_display = subject_type.display(db);
     let mut diagnostic = builder.into_diagnostic(format_args!(
-        "`{subject_display}` has an unsafe overlap with protocol `{protocol_name}`",
+        "`{subject_display}` unsafely overlaps with protocol `{protocol_name}`",
     ));
-    diagnostic.set_primary_message(format_args!(
-        "This `{function_name}()` check will always pass at runtime"
-    ));
+    if let [first, _] = &*call.arguments.args {
+        diagnostic.annotate(
+            context
+                .secondary(first)
+                .message(format_args!("Has type `{subject_display}`")),
+        );
+    }
     diagnostic.info(format_args!(
         "`{subject_display}` has all the members of `{protocol_name}`, \
         but with incompatible types"
     ));
-    diagnostic.info(
-        "A runtime `isinstance()` check against a protocol only checks \
-        for the presence of the required methods, not their type signatures",
-    );
+    diagnostic.info(format_args!(
+        "Runtime `{function_name}` checks against protocols only check \
+        for the presence of the required members, not their types",
+    ));
 }
 
 pub(crate) fn report_match_pattern_against_non_runtime_checkable_protocol<T: Ranged>(

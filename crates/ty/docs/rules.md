@@ -3713,11 +3713,11 @@ first argument unsafely overlaps with a runtime-checkable protocol.
 **Why is this bad?**
 
 A type `X` unsafely overlaps with a protocol `P` if `X` is not
-assignable to `P`, but `X` has all the same members as `P` (just with
-incompatible types). In this case, `isinstance()` would return `True`
-at runtime (since the runtime check only verifies the presence of
-members, not their types), but the type checker cannot safely narrow
-the type.
+assignable to `P`, but all members of `P` are available as attributes on
+`X` (just with incompatible types). In this case, `isinstance()` would
+return `True` at runtime (since the runtime check only verifies the
+presence of members, not their types), but the type checker cannot safely
+narrow the type.
 
 **Examples**
 

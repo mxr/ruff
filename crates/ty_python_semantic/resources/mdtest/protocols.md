@@ -2684,53 +2684,44 @@ def match_nested_non_runtime_checkable(arg: Wrapper):
 
 <!-- snapshot-diagnostics -->
 
-A type `X` unsafely overlaps with a protocol `P` if `X` is not assignable to `P`, but `X` has all
-the same member names as `P` (with incompatible types). In this case, `isinstance()` would return
-`True` at runtime (since the runtime check only verifies the presence of members, not their types),
-but the type checker cannot safely narrow the type:
+A type `X` unsafely overlaps with a protocol `P` if `X` is not assignable to `P`, but all members on
+`P` are present as attributes on `X` (with incompatible types). In this case, `isinstance()` would
+return `True` at runtime (since the runtime check only verifies the presence of members, not their
+types), but the type checker cannot safely narrow the type:
 
 ```py
 from typing import Protocol, runtime_checkable
 
 @runtime_checkable
-class HasMethod(Protocol):
+class MethodProto(Protocol):
     def method(self, x: int) -> int: ...
 
 @runtime_checkable
-class HasName(Protocol):
-    name: str
+class AttributeProto(Protocol):
+    method: int
 
-class UnsafeOverlap:
-    def method(self, x: str) -> None:  # same name, incompatible type
+class MethodNominal:
+    def method(self, x: str) -> None:
         pass
 
-class AttributeOverlap:
-    method: int = 1  # same name, not a callable
+class AttributeNominal:
+    method: int = 1
 
-class NoOverlap:
-    def other_method(self) -> None:  # different name
-        pass
+def check_isinstance(method_nominal: MethodNominal, attribute_nominal: AttributeNominal, obj: object):
+    isinstance(method_nominal, MethodProto)  # error: [unsafe-isinstance-narrowing]
+    isinstance(method_nominal, AttributeProto)  # error: [unsafe-isinstance-narrowing]
+    isinstance(attribute_nominal, MethodProto)  # error: [unsafe-isinstance-narrowing]
 
-class Safe:
-    def method(self, x: int) -> int:  # compatible type
-        return x
-
-def check_isinstance(a: UnsafeOverlap, b: AttributeOverlap, c: NoOverlap, d: Safe, e: object):
-    isinstance(a, HasMethod)  # error: [unsafe-isinstance-narrowing]
-    isinstance(b, HasMethod)  # error: [unsafe-isinstance-narrowing]
-    isinstance(c, HasMethod)  # no error: `NoOverlap` doesn't have all members
-    isinstance(d, HasMethod)  # no error: `Safe` is assignable to `HasMethod`
-    isinstance(e, HasMethod)  # no error: `object` doesn't have all members
-    isinstance(a, HasName)  # no error: `UnsafeOverlap` doesn't have `name`
+    isinstance(attribute_nominal, AttributeProto)  # no error: `AttributeNominal <: AttributeProto`
+    isinstance(obj, MethodNominal)  # no error: members from `MethodNominal` are missing as attributes
+    isinstance(obj, AttributeProto)  # no error: members from `AttributeNominal` are missing as attributes
 ```
 
 The same check applies to `issubclass()`:
 
 ```py
 def check_issubclass():
-    issubclass(UnsafeOverlap, HasMethod)  # error: [unsafe-isinstance-narrowing]
-    issubclass(NoOverlap, HasMethod)  # no error
-    issubclass(Safe, HasMethod)  # no error
+    issubclass(MethodNominal, MethodProto)  # error: [unsafe-isinstance-narrowing]
 ```
 
 Unsafe overlap is also detected when protocols appear in a tuple. An error is reported for each
@@ -2741,21 +2732,21 @@ protocol in the tuple that has an unsafe overlap:
 class NonDataProtocol(Protocol):
     def method(self) -> int: ...
 
-def check_tuple(a: AttributeOverlap):
+def check_tuple(attribute_nominal: AttributeNominal):
     # error: [unsafe-isinstance-narrowing]
     # error: [unsafe-isinstance-narrowing]
-    isinstance(a, (HasMethod, NonDataProtocol))
+    isinstance(attribute_nominal, (MethodProto, NonDataProtocol))
 ```
 
 Unions in the first argument are checked element-by-element. If any element of the union unsafely
 overlaps with the protocol, an error is emitted:
 
 ```py
-def check_union(x: UnsafeOverlap | int):
-    isinstance(x, HasMethod)  # error: [unsafe-isinstance-narrowing]
+def check_union(nominal: MethodNominal | int):
+    isinstance(nominal, MethodProto)  # error: [unsafe-isinstance-narrowing]
 
-def check_union_no_overlap(x: NoOverlap | int):
-    isinstance(x, HasMethod)  # no error
+def check_union_no_overlap(str_or_int: str | int):
+    isinstance(str_or_int, MethodProto)  # no error
 ```
 
 ## Truthiness of protocol instances
