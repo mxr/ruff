@@ -928,7 +928,7 @@ declare_lint! {
     /// - [Typing specification: Runtime-checkable protocols](https://typing.python.org/en/latest/spec/protocol.html#runtime-checkable-decorator-and-narrowing-types-by-isinstance)
     pub(crate) static UNSAFE_ISINSTANCE_NARROWING = {
         summary: "reports `isinstance()` or `issubclass()` calls with unsafe protocol overlap",
-        status: LintStatus::stable("0.0.21"),
+        status: LintStatus::stable("0.0.23"),
         default_level: Level::Error,
     }
 }
