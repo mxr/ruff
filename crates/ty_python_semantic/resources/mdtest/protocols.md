@@ -2749,14 +2749,31 @@ def check_union_no_overlap(str_or_int: str | int):
     isinstance(str_or_int, MethodProto)  # no error
 ```
 
-No false positive is emitted when the first argument is a specialization of the same generic
-protocol:
+No false positive is emitted when the first argument is a specialization of a generic protocol that
+it is assignable to:
 
 ```py
-from typing import Collection
+from typing import TypeVar
 
-def check_generic_protocol(x: Collection[int]):
-    isinstance(x, Collection)  # no error
+T = TypeVar("T")
+
+@runtime_checkable
+class GenericProto(Protocol[T]):
+    def get(self) -> T: ...
+
+def check_generic_no_overlap(x: GenericProto[int]):
+    isinstance(x, GenericProto)  # no error: `GenericProto[int]` is assignable to `GenericProto`
+```
+
+Unsafe overlaps with generic protocols are still detected when a class has all the required members
+but with incompatible types:
+
+```py
+class BadGenericOverlap:
+    get: int  # has `get`, but it's an attribute, not a callable
+
+def check_generic_overlap(x: BadGenericOverlap):
+    isinstance(x, GenericProto)  # error: [unsafe-isinstance-narrowing]
 ```
 
 ## Truthiness of protocol instances

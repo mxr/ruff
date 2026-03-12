@@ -53,10 +53,21 @@ mdtest path: crates/ty_python_semantic/resources/mdtest/protocols.md
 38 | 
 39 | def check_union_no_overlap(str_or_int: str | int):
 40 |     isinstance(str_or_int, MethodProto)  # no error
-41 | from typing import Collection
+41 | from typing import TypeVar
 42 | 
-43 | def check_generic_protocol(x: Collection[int]):
-44 |     isinstance(x, Collection)  # no error
+43 | T = TypeVar("T")
+44 | 
+45 | @runtime_checkable
+46 | class GenericProto(Protocol[T]):
+47 |     def get(self) -> T: ...
+48 | 
+49 | def check_generic_no_overlap(x: GenericProto[int]):
+50 |     isinstance(x, GenericProto)  # no error: `GenericProto[int]` is assignable to `GenericProto`
+51 | class BadGenericOverlap:
+52 |     get: int  # has `get`, but it's an attribute, not a callable
+53 | 
+54 | def check_generic_overlap(x: BadGenericOverlap):
+55 |     isinstance(x, GenericProto)  # error: [unsafe-isinstance-narrowing]
 ```
 
 # Diagnostics
@@ -187,6 +198,22 @@ error[unsafe-isinstance-narrowing]: `MethodNominal` unsafely overlaps with proto
 39 | def check_union_no_overlap(str_or_int: str | int):
    |
 info: `MethodNominal` has all the members of `MethodProto`, but with incompatible types
+info: Runtime `isinstance` checks against protocols only check for the presence of the required members, not their types
+info: rule `unsafe-isinstance-narrowing` is enabled by default
+
+```
+
+```
+error[unsafe-isinstance-narrowing]: `BadGenericOverlap` unsafely overlaps with protocol `GenericProto`
+  --> src/mdtest_snippet.py:55:5
+   |
+54 | def check_generic_overlap(x: BadGenericOverlap):
+55 |     isinstance(x, GenericProto)  # error: [unsafe-isinstance-narrowing]
+   |     ^^^^^^^^^^^-^^^^^^^^^^^^^^^
+   |                |
+   |                Has type `BadGenericOverlap`
+   |
+info: `BadGenericOverlap` has all the members of `GenericProto`, but with incompatible types
 info: Runtime `isinstance` checks against protocols only check for the presence of the required members, not their types
 info: rule `unsafe-isinstance-narrowing` is enabled by default
 
