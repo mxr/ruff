@@ -2749,6 +2749,16 @@ def check_union_no_overlap(str_or_int: str | int):
     isinstance(str_or_int, MethodProto)  # no error
 ```
 
+No false positive is emitted when the first argument is a specialization of the same generic
+protocol:
+
+```py
+from typing import Collection
+
+def check_generic_protocol(x: Collection[int]):
+    isinstance(x, Collection)  # no error
+```
+
 ## Truthiness of protocol instances
 
 An instance of a protocol type generally has ambiguous truthiness:

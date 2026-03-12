@@ -1375,7 +1375,10 @@ fn check_unsafe_overlap_with_protocol<'db>(
     protocol_class: ProtocolClass<'db>,
 ) {
     let protocol_interface = protocol_class.interface(db);
-    let protocol_instance_type = Type::instance(db, *protocol_class);
+    // Use the top materialization of the protocol (type params replaced with their upper
+    // bounds) so that e.g. `Collection[int]` is correctly seen as assignable to `Collection`.
+    let protocol_instance_type =
+        Type::instance(db, protocol_class.class_literal(db).top_materialization(db));
 
     // If the first argument is a union, each element is checked individually,
     // since the spec states that if any element of a union unsafely overlaps
