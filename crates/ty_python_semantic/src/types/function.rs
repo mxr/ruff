@@ -74,7 +74,7 @@ use crate::types::diagnostic::{
     report_bad_argument_to_protocol_interface, report_invalid_total_ordering_call,
     report_issubclass_check_against_protocol_with_non_method_members,
     report_runtime_check_against_non_runtime_checkable_protocol,
-    report_runtime_check_against_typed_dict,
+    report_runtime_check_against_typed_dict, report_unsafe_isinstance_narrowing,
 };
 use crate::types::display::DisplaySettings;
 use crate::types::generics::{GenericContext, InferableTypeVars, typing_self};
@@ -82,6 +82,7 @@ use crate::types::infer::nearest_enclosing_class;
 use crate::types::known_instance::DeprecatedInstance;
 use crate::types::list_members::all_members;
 use crate::types::narrow::ClassInfoConstraintFunction;
+use crate::types::protocol_class::ProtocolClass;
 use crate::types::relation::{HasRelationToVisitor, IsDisjointVisitor, TypeRelation};
 use crate::types::signatures::{CallableSignature, Signature};
 use crate::types::visitor::any_over_type;
@@ -1276,6 +1277,7 @@ fn check_classinfo_in_isinstance<'db>(
     context: &InferContext<'db, '_>,
     call_expression: &ast::ExprCall,
     function: KnownFunction,
+    first_arg_type: Type<'db>,
     classinfo: Type<'db>,
     classinfo_expr: Option<&ast::Expr>,
 ) {
@@ -1300,7 +1302,25 @@ fn check_classinfo_in_isinstance<'db>(
                             protocol_class,
                             &non_method_members,
                         );
+                    } else {
+                        check_unsafe_overlap_with_protocol(
+                            db,
+                            context,
+                            call_expression,
+                            function,
+                            first_arg_type,
+                            protocol_class,
+                        );
                     }
+                } else {
+                    check_unsafe_overlap_with_protocol(
+                        db,
+                        context,
+                        call_expression,
+                        function,
+                        first_arg_type,
+                        protocol_class,
+                    );
                 }
             }
         }
@@ -1336,6 +1356,7 @@ fn check_classinfo_in_isinstance<'db>(
                         context,
                         call_expression,
                         function,
+                        first_arg_type,
                         element,
                         element_expr,
                     );
@@ -1344,6 +1365,95 @@ fn check_classinfo_in_isinstance<'db>(
         }
         _ => {}
     }
+}
+
+/// Check if the first argument to `isinstance()`/`issubclass()` has an unsafe overlap
+/// with a runtime-checkable protocol.
+///
+/// A type `X` unsafely overlaps with a protocol `P` if `X` is not assignable to `P`,
+/// but `X` has all the same member names as `P` (i.e., `X` is assignable to the
+/// "type-erased" version of `P` where all members have type `Any`).
+fn check_unsafe_overlap_with_protocol<'db>(
+    db: &'db dyn Db,
+    context: &InferContext<'db, '_>,
+    call_expression: &ast::ExprCall,
+    function: KnownFunction,
+    first_arg_type: Type<'db>,
+    protocol_class: ProtocolClass<'db>,
+) {
+    let protocol_interface = protocol_class.interface(db);
+    let protocol_instance_type = Type::instance(db, *protocol_class);
+
+    // Determine the "subject types" to check. For isinstance, the subject is the
+    // first argument type directly. For issubclass, we need the instance type of the class.
+    let subject_types = collect_subject_types(db, function, first_arg_type);
+
+    for subject_type in subject_types {
+        // Skip dynamic types — we can't meaningfully check overlap.
+        if subject_type.is_dynamic()
+            || subject_type.is_never()
+            || subject_type.is_assignable_to(db, protocol_instance_type)
+        {
+            continue;
+        }
+
+        // Check if the subject type has all member names from the protocol.
+        let has_all_members = protocol_interface
+            .members(db)
+            .all(|member| !subject_type.member(db, member.name()).place.is_undefined());
+
+        if has_all_members {
+            report_unsafe_isinstance_narrowing(
+                context,
+                call_expression,
+                subject_type,
+                protocol_class,
+                function,
+            );
+            // Report only once per call, even if multiple union elements overlap.
+            return;
+        }
+    }
+}
+
+/// Collect the "subject types" to check against a protocol for unsafe overlap.
+///
+/// For `isinstance(x, P)`, the subject is the type of `x`.
+/// For `issubclass(C, P)`, the subject is the instance type of `C`.
+///
+/// If the first argument is a union, each element is checked individually,
+/// since the spec states that if any element of a union unsafely overlaps
+/// with a protocol, the whole union unsafely overlaps.
+fn collect_subject_types<'db>(
+    db: &'db dyn Db,
+    function: KnownFunction,
+    first_arg_type: Type<'db>,
+) -> Vec<Type<'db>> {
+    let mut result = Vec::new();
+
+    let types_to_check: Vec<Type<'db>> = match first_arg_type {
+        Type::Union(union) => union.elements(db).to_vec(),
+        other => vec![other],
+    };
+
+    for ty in types_to_check {
+        match function {
+            KnownFunction::IsInstance => {
+                result.push(ty);
+            }
+            KnownFunction::IsSubclass => {
+                // For issubclass, extract the instance type from the class type.
+                if let Type::ClassLiteral(class) = ty {
+                    result.push(Type::instance(db, class.default_specialization(db)));
+                }
+                // For `type` or other class representations, we can't determine
+                // the concrete instance type, so we skip the check.
+            }
+            _ => {}
+        }
+    }
+
+    result
 }
 
 /// Report an error if a `types.UnionType` instance passed to `isinstance()`/`issubclass()`
@@ -2167,6 +2277,7 @@ impl KnownFunction {
                     context,
                     call_expression,
                     self,
+                    *first_arg,
                     *second_argument,
                     call_expression.arguments.args.get(1),
                 );

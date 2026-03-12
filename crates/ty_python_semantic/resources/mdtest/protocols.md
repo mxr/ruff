@@ -2680,6 +2680,84 @@ def match_nested_non_runtime_checkable(arg: Wrapper):
             pass
 ```
 
+## Unsafe overlap with runtime-checkable protocols
+
+<!-- snapshot-diagnostics -->
+
+A type `X` unsafely overlaps with a protocol `P` if `X` is not assignable to `P`, but `X` has all
+the same member names as `P` (with incompatible types). In this case, `isinstance()` would return
+`True` at runtime (since the runtime check only verifies the presence of members, not their types),
+but the type checker cannot safely narrow the type:
+
+```py
+from typing import Protocol, runtime_checkable
+
+@runtime_checkable
+class HasMethod(Protocol):
+    def method(self, x: int) -> int: ...
+
+@runtime_checkable
+class HasName(Protocol):
+    name: str
+
+class UnsafeOverlap:
+    def method(self, x: str) -> None:  # same name, incompatible type
+        pass
+
+class AttributeOverlap:
+    method: int = 1  # same name, not a callable
+
+class NoOverlap:
+    def other_method(self) -> None:  # different name
+        pass
+
+class Safe:
+    def method(self, x: int) -> int:  # compatible type
+        return x
+
+def check_isinstance(a: UnsafeOverlap, b: AttributeOverlap, c: NoOverlap, d: Safe, e: object):
+    isinstance(a, HasMethod)  # error: [unsafe-isinstance-narrowing]
+    isinstance(b, HasMethod)  # error: [unsafe-isinstance-narrowing]
+    isinstance(c, HasMethod)  # no error: `NoOverlap` doesn't have all members
+    isinstance(d, HasMethod)  # no error: `Safe` is assignable to `HasMethod`
+    isinstance(e, HasMethod)  # no error: `object` doesn't have all members
+    isinstance(a, HasName)  # no error: `UnsafeOverlap` doesn't have `name`
+```
+
+The same check applies to `issubclass()`:
+
+```py
+def check_issubclass():
+    issubclass(UnsafeOverlap, HasMethod)  # error: [unsafe-isinstance-narrowing]
+    issubclass(NoOverlap, HasMethod)  # no error
+    issubclass(Safe, HasMethod)  # no error
+```
+
+Unsafe overlap is also detected when protocols appear in a tuple. An error is reported for each
+protocol in the tuple that has an unsafe overlap:
+
+```py
+@runtime_checkable
+class NonDataProtocol(Protocol):
+    def method(self) -> int: ...
+
+def check_tuple(a: AttributeOverlap):
+    # error: [unsafe-isinstance-narrowing]
+    # error: [unsafe-isinstance-narrowing]
+    isinstance(a, (HasMethod, NonDataProtocol))
+```
+
+Unions in the first argument are checked element-by-element. If any element of the union unsafely
+overlaps with the protocol, an error is emitted:
+
+```py
+def check_union(x: UnsafeOverlap | int):
+    isinstance(x, HasMethod)  # error: [unsafe-isinstance-narrowing]
+
+def check_union_no_overlap(x: NoOverlap | int):
+    isinstance(x, HasMethod)  # no error
+```
+
 ## Truthiness of protocol instances
 
 An instance of a protocol type generally has ambiguous truthiness:
