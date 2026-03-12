@@ -6,6 +6,7 @@ pub(crate) mod check;
 pub(crate) mod check_stdin;
 pub(crate) mod clean;
 pub(crate) mod config;
+pub(crate) mod file_schedule;
 pub(crate) mod format;
 pub(crate) mod format_stdin;
 pub(crate) mod linter;

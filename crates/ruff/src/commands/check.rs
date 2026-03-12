@@ -27,7 +27,8 @@ use ruff_workspace::resolver::{
 };
 
 use crate::args::ConfigArguments;
-use crate::cache::{Cache, PackageCacheMap, PackageCaches};
+use crate::cache::{Cache, FileCacheKey, PackageCacheMap, PackageCaches};
+use crate::commands::file_schedule::{ScheduledFile, sort_non_cached_by_size};
 use crate::diagnostics::Diagnostics;
 
 /// Run the linter over a collection of files.
@@ -78,38 +79,20 @@ pub(crate) fn check(
         None
     };
 
+    let scheduled_paths =
+        schedule_check_paths(&paths, &package_roots, &resolver, caches.as_ref(), noqa);
+
     let start = Instant::now();
-    let diagnostics_per_file = paths.par_iter().filter_map(|resolved_file| {
+    let diagnostics_per_file = scheduled_paths.par_iter().filter_map(|resolved_file| {
         let result = match resolved_file {
             Ok(resolved_file) => {
-                let path = resolved_file.path();
-                let package = path
-                    .parent()
-                    .and_then(|parent| package_roots.get(parent))
-                    .and_then(|package| *package);
-
+                let path = resolved_file.resolved_file.path();
                 let settings = resolver.resolve(path);
-
-                if (settings.file_resolver.force_exclude || !resolved_file.is_root())
-                    && match_exclusion(
-                        resolved_file.path(),
-                        resolved_file.file_name(),
-                        &settings.linter.exclude,
-                    )
-                {
-                    return None;
-                }
-
-                let cache_root = package
-                    .map(PackageRoot::path)
-                    .unwrap_or_else(|| path.parent().unwrap_or(path));
-                let cache = caches.get(cache_root);
-
                 lint_path(
                     path,
-                    package,
+                    resolved_file.package,
                     &settings.linter,
-                    cache,
+                    resolved_file.cache,
                     noqa,
                     fix_mode,
                     unsafe_fixes,
@@ -213,11 +196,97 @@ fn lint_path(
     }
 }
 
+fn schedule_check_paths<'a>(
+    paths: &[std::result::Result<ResolvedFile, Error>],
+    package_roots: &FxHashMap<&'a Path, Option<PackageRoot<'a>>>,
+    resolver: &'a ruff_workspace::resolver::Resolver,
+    caches: Option<&'a PackageCacheMap<'a>>,
+    noqa: flags::Noqa,
+) -> Vec<std::result::Result<CheckWorkItem<'a>, Error>> {
+    sort_non_cached_by_size(
+        paths
+            .iter()
+            .filter_map(|entry| match entry {
+                Ok(resolved_file) => {
+                    let path = resolved_file.path();
+                    let settings = resolver.resolve(path);
+
+                    if (settings.file_resolver.force_exclude || !resolved_file.is_root())
+                        && match_exclusion(
+                            resolved_file.path(),
+                            resolved_file.file_name(),
+                            &settings.linter.exclude,
+                        )
+                    {
+                        return None;
+                    }
+
+                    let package = path
+                        .parent()
+                        .and_then(|parent| package_roots.get(parent))
+                        .and_then(|package| *package);
+                    let cache_root = package
+                        .map(PackageRoot::path)
+                        .unwrap_or_else(|| path.parent().unwrap_or(path));
+                    let cache = caches.and_then(|caches| caches.get(cache_root));
+
+                    Some(ScheduledFile {
+                        file: Ok(CheckWorkItem {
+                            resolved_file: clone_resolved_file(resolved_file),
+                            package,
+                            cache,
+                        }),
+                        size_hint: file_size(path),
+                        cached: is_check_cache_hit(path, cache, noqa),
+                    })
+                }
+                Err(err) => Some(ScheduledFile {
+                    file: Err(err.clone()),
+                    size_hint: 0,
+                    cached: true,
+                }),
+            })
+            .collect(),
+    )
+}
+
+fn is_check_cache_hit(path: &Path, cache: Option<&Cache>, noqa: flags::Noqa) -> bool {
+    if noqa.is_enabled()
+        && let Some(cache) = cache
+        && let Some(relative_path) = cache.relative_path(path)
+        && let Ok(cache_key) = FileCacheKey::from_path(path)
+    {
+        cache
+            .get(relative_path, &cache_key)
+            .is_some_and(crate::cache::FileCache::linted)
+    } else {
+        false
+    }
+}
+
+fn file_size(path: &Path) -> u64 {
+    path.metadata().map_or(0, |metadata| metadata.len())
+}
+
+fn clone_resolved_file(resolved_file: &ResolvedFile) -> ResolvedFile {
+    match resolved_file {
+        ResolvedFile::Root(path) => ResolvedFile::Root(path.clone()),
+        ResolvedFile::Nested(path) => ResolvedFile::Nested(path.clone()),
+    }
+}
+
+struct CheckWorkItem<'a> {
+    resolved_file: ResolvedFile,
+    package: Option<PackageRoot<'a>>,
+    cache: Option<&'a Cache>,
+}
+
 #[cfg(test)]
 #[cfg(unix)]
 mod test {
     use std::fs;
     use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Path;
 
     use anyhow::Result;
     use rustc_hash::FxHashMap;
@@ -225,6 +294,7 @@ mod test {
 
     use ruff_db::diagnostic::{DiagnosticFormat, DisplayDiagnosticConfig, DisplayDiagnostics};
     use ruff_linter::message::EmitterContext;
+    use ruff_linter::package::PackageRoot;
     use ruff_linter::registry::Rule;
     use ruff_linter::settings::types::UnsafeFixes;
     use ruff_linter::settings::{LinterSettings, flags};
@@ -232,8 +302,9 @@ mod test {
     use ruff_workspace::resolver::{PyprojectConfig, PyprojectDiscoveryStrategy};
 
     use crate::args::ConfigArguments;
+    use crate::cache::{self, Cache};
 
-    use super::check;
+    use super::{check, is_check_cache_hit};
 
     /// We check that regular python files, pyproject.toml and jupyter notebooks all handle io
     /// errors gracefully
@@ -297,6 +368,56 @@ mod test {
         }, {
             insta::assert_snapshot!(snapshot, messages);
         });
+        Ok(())
+    }
+
+    #[test]
+    fn detects_lint_cache_hits() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        let package_root = tempdir.path().join("package");
+        fs::create_dir(&package_root)?;
+
+        let cache_dir = tempdir.path().join("cache");
+        cache::init(&cache_dir)?;
+
+        let path = package_root.join("main.py");
+        fs::write(&path, "x = 1\n")?;
+
+        let settings = Settings {
+            cache_dir,
+            ..Settings::default()
+        };
+
+        let cache = Cache::open(package_root.clone(), &settings);
+        assert!(!is_check_cache_hit(
+            &path,
+            Some(&cache),
+            flags::Noqa::Enabled
+        ));
+
+        crate::diagnostics::lint_path(
+            &path,
+            Some(PackageRoot::root(Path::new(&package_root))),
+            &settings.linter,
+            Some(&cache),
+            flags::Noqa::Enabled,
+            flags::FixMode::Generate,
+            UnsafeFixes::Enabled,
+        )?;
+        cache.persist()?;
+
+        let cache = Cache::open(package_root, &settings);
+        assert!(is_check_cache_hit(
+            &path,
+            Some(&cache),
+            flags::Noqa::Enabled
+        ));
+        assert!(!is_check_cache_hit(
+            &path,
+            Some(&cache),
+            flags::Noqa::Disabled
+        ));
+
         Ok(())
     }
 }

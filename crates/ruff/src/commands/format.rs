@@ -43,6 +43,7 @@ use ruff_workspace::resolver::{
 
 use crate::args::{ConfigArguments, FormatArguments, FormatRange};
 use crate::cache::{Cache, FileCacheKey, PackageCacheMap, PackageCaches};
+use crate::commands::file_schedule::{ScheduledFile, sort_non_cached_by_size};
 use crate::{ExitStatus, resolve_default_files};
 
 #[derive(Debug, Copy, Clone, is_macro::Is)]
@@ -114,65 +115,39 @@ pub(crate) fn format(
         Some(PackageCacheMap::init(&package_roots, &resolver))
     };
 
+    let scheduled_paths = schedule_format_paths(&paths, &package_roots, &resolver, caches.as_ref());
+
     let start = Instant::now();
-    let (results, mut errors): (Vec<_>, Vec<_>) = paths
+    let (results, mut errors): (Vec<_>, Vec<_>) = scheduled_paths
         .par_iter()
-        .filter_map(|entry| {
-            match entry {
-                Ok(resolved_file) => {
-                    let path = resolved_file.path();
-                    let settings = resolver.resolve(path);
+        .filter_map(|entry| match entry {
+            Ok(resolved_file) => {
+                let path = resolved_file.resolved_file.path();
+                let settings = resolver.resolve(path);
 
-                    let source_type = settings.formatter.extension.get_source_type(path);
-                    if source_type.is_toml() {
-                        // Ignore TOML files.
-                        return None;
-                    }
-
-                    // Ignore files that are excluded from formatting
-                    if (settings.file_resolver.force_exclude || !resolved_file.is_root())
-                        && match_exclusion(
+                Some(
+                    match catch_unwind(|| {
+                        format_path(
                             path,
-                            resolved_file.file_name(),
-                            &settings.formatter.exclude,
+                            &settings.formatter,
+                            resolved_file.source_type,
+                            mode,
+                            cli.range,
+                            resolved_file.cache,
                         )
-                    {
-                        return None;
-                    }
-
-                    let package = path
-                        .parent()
-                        .and_then(|parent| package_roots.get(parent).copied())
-                        .flatten();
-                    let cache_root = package
-                        .map(PackageRoot::path)
-                        .unwrap_or_else(|| path.parent().unwrap_or(path));
-                    let cache = caches.get(cache_root);
-
-                    Some(
-                        match catch_unwind(|| {
-                            format_path(
-                                path,
-                                &settings.formatter,
-                                source_type,
-                                mode,
-                                cli.range,
-                                cache,
-                            )
-                        }) {
-                            Ok(inner) => inner.map(|result| FormatPathResult {
-                                path: resolved_file.path().to_path_buf(),
-                                result,
-                            }),
-                            Err(error) => Err(FormatCommandError::Panic(
-                                Some(resolved_file.path().to_path_buf()),
-                                Box::new(error),
-                            )),
-                        },
-                    )
-                }
-                Err(err) => Some(Err(FormatCommandError::Ignore(err.clone()))),
+                    }) {
+                        Ok(inner) => inner.map(|result| FormatPathResult {
+                            path: resolved_file.resolved_file.path().to_path_buf(),
+                            result,
+                        }),
+                        Err(error) => Err(FormatCommandError::Panic(
+                            Some(resolved_file.resolved_file.path().to_path_buf()),
+                            Box::new(error),
+                        )),
+                    },
+                )
             }
+            Err(err) => Some(Err(FormatCommandError::Ignore(err.clone()))),
         })
         .partition_map(|result| match result {
             Ok(diagnostic) => Left(diagnostic),
@@ -252,6 +227,91 @@ pub(crate) fn format(
             }
         }
     }
+}
+
+fn schedule_format_paths<'a>(
+    paths: &[std::result::Result<ResolvedFile, ignore::Error>],
+    package_roots: &FxHashMap<&'a Path, Option<PackageRoot<'a>>>,
+    resolver: &'a Resolver,
+    caches: Option<&'a PackageCacheMap<'a>>,
+) -> Vec<std::result::Result<FormatWorkItem<'a>, ignore::Error>> {
+    sort_non_cached_by_size(
+        paths
+            .iter()
+            .filter_map(|entry| match entry {
+                Ok(resolved_file) => {
+                    let path = resolved_file.path();
+                    let settings = resolver.resolve(path);
+                    let source_type = settings.formatter.extension.get_source_type(path);
+                    if source_type.is_toml() {
+                        return None;
+                    }
+
+                    if (settings.file_resolver.force_exclude || !resolved_file.is_root())
+                        && match_exclusion(
+                            path,
+                            resolved_file.file_name(),
+                            &settings.formatter.exclude,
+                        )
+                    {
+                        return None;
+                    }
+
+                    let package = path
+                        .parent()
+                        .and_then(|parent| package_roots.get(parent).copied())
+                        .flatten();
+                    let cache_root = package
+                        .map(PackageRoot::path)
+                        .unwrap_or_else(|| path.parent().unwrap_or(path));
+                    let cache = caches.and_then(|caches| caches.get(cache_root));
+
+                    Some(ScheduledFile {
+                        file: Ok(FormatWorkItem {
+                            resolved_file: clone_resolved_file(resolved_file),
+                            source_type,
+                            cache,
+                        }),
+                        size_hint: file_size(path),
+                        cached: is_format_cache_hit(path, cache),
+                    })
+                }
+                Err(err) => Some(ScheduledFile {
+                    file: Err(err.clone()),
+                    size_hint: 0,
+                    cached: true,
+                }),
+            })
+            .collect(),
+    )
+}
+
+fn is_format_cache_hit(path: &Path, cache: Option<&Cache>) -> bool {
+    if let Some(cache) = cache
+        && let Some(relative_path) = cache.relative_path(path)
+        && let Ok(cache_key) = FileCacheKey::from_path(path)
+    {
+        cache.is_formatted(relative_path, &cache_key)
+    } else {
+        false
+    }
+}
+
+fn file_size(path: &Path) -> u64 {
+    path.metadata().map_or(0, |metadata| metadata.len())
+}
+
+fn clone_resolved_file(resolved_file: &ResolvedFile) -> ResolvedFile {
+    match resolved_file {
+        ResolvedFile::Root(path) => ResolvedFile::Root(path.clone()),
+        ResolvedFile::Nested(path) => ResolvedFile::Nested(path.clone()),
+    }
+}
+
+struct FormatWorkItem<'a> {
+    resolved_file: ResolvedFile,
+    source_type: SourceType,
+    cache: Option<&'a Cache>,
 }
 
 /// Format the file at the given [`Path`].
@@ -1276,22 +1336,30 @@ pub(super) fn warn_incompatible_formatter_settings(resolver: &Resolver) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io;
     use std::ops::Range;
     use std::path::PathBuf;
 
     use ignore::Error;
     use insta::assert_snapshot;
+    use tempfile::TempDir;
 
     use ruff_db::panic::catch_unwind;
     use ruff_linter::logging::DisplayParseError;
     use ruff_linter::source_kind::{SourceError, SourceKind};
+    use ruff_python_ast::{PySourceType, SourceType};
     use ruff_python_formatter::FormatModuleError;
     use ruff_python_parser::{ParseError, ParseErrorType};
     use ruff_text_size::{TextRange, TextSize};
+    use ruff_workspace::Settings;
     use test_case::test_case;
 
-    use crate::commands::format::{FormatCommandError, FormatMode, FormatResults, ModifiedRange};
+    use crate::cache::{self, Cache};
+    use crate::commands::format::{
+        FormatCommandError, FormatMode, FormatResult, FormatResults, ModifiedRange, format_path,
+        is_format_cache_hit,
+    };
 
     #[test]
     fn error_diagnostics() -> anyhow::Result<()> {
@@ -1421,5 +1489,43 @@ mod tests {
                 TextSize::new(expect_formatted.end)
             )
         );
+    }
+
+    #[test]
+    fn detects_format_cache_hits() -> anyhow::Result<()> {
+        let tempdir = TempDir::new()?;
+        let package_root = tempdir.path().join("package");
+        fs::create_dir(&package_root)?;
+
+        let cache_dir = tempdir.path().join("cache");
+        cache::init(&cache_dir)?;
+
+        let path = package_root.join("main.py");
+        fs::write(&path, "x = 1\n")?;
+
+        let settings = Settings {
+            cache_dir,
+            ..Settings::default()
+        };
+
+        let cache = Cache::open(package_root.clone(), &settings);
+        assert!(!is_format_cache_hit(&path, Some(&cache)));
+
+        let result = format_path(
+            &path,
+            &settings.formatter,
+            SourceType::Python(PySourceType::Python),
+            FormatMode::Write,
+            None,
+            Some(&cache),
+        )
+        .expect("formatted file should succeed");
+        assert!(matches!(result, FormatResult::Unchanged));
+        cache.persist()?;
+
+        let cache = Cache::open(package_root, &settings);
+        assert!(is_format_cache_hit(&path, Some(&cache)));
+
+        Ok(())
     }
 }
