@@ -67,96 +67,102 @@ mdtest path: crates/ty_python_semantic/resources/mdtest/protocols.md
 # Diagnostics
 
 ```
-error[unsafe-isinstance-narrowing]: `isinstance()` check against protocol `HasMethod` will always pass at runtime but is unsafe because `UnsafeOverlap` has all members of `HasMethod` with incompatible types
+error[unsafe-isinstance-narrowing]: `UnsafeOverlap` has an unsafe overlap with protocol `HasMethod`
   --> src/mdtest_snippet.py:27:5
    |
 26 | def check_isinstance(a: UnsafeOverlap, b: AttributeOverlap, c: NoOverlap, d: Safe, e: object):
 27 |     isinstance(a, HasMethod)  # error: [unsafe-isinstance-narrowing]
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^ `UnsafeOverlap` has an unsafe overlap with protocol `HasMethod`
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^ This `isinstance()` check will always pass at runtime
 28 |     isinstance(b, HasMethod)  # error: [unsafe-isinstance-narrowing]
 29 |     isinstance(c, HasMethod)  # no error: `NoOverlap` doesn't have all members
    |
-info: A runtime `isinstance()` check against a protocol only verifies the presence of required members, not their types. This means the check can pass for objects that are not actually assignable to the protocol
+info: `UnsafeOverlap` has all the members of `HasMethod`, but with incompatible types
+info: A runtime `isinstance()` check against a protocol only checks for the presence of the required methods, not their type signatures
 info: rule `unsafe-isinstance-narrowing` is enabled by default
 
 ```
 
 ```
-error[unsafe-isinstance-narrowing]: `isinstance()` check against protocol `HasMethod` will always pass at runtime but is unsafe because `AttributeOverlap` has all members of `HasMethod` with incompatible types
+error[unsafe-isinstance-narrowing]: `AttributeOverlap` has an unsafe overlap with protocol `HasMethod`
   --> src/mdtest_snippet.py:28:5
    |
 26 | def check_isinstance(a: UnsafeOverlap, b: AttributeOverlap, c: NoOverlap, d: Safe, e: object):
 27 |     isinstance(a, HasMethod)  # error: [unsafe-isinstance-narrowing]
 28 |     isinstance(b, HasMethod)  # error: [unsafe-isinstance-narrowing]
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^ `AttributeOverlap` has an unsafe overlap with protocol `HasMethod`
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^ This `isinstance()` check will always pass at runtime
 29 |     isinstance(c, HasMethod)  # no error: `NoOverlap` doesn't have all members
 30 |     isinstance(d, HasMethod)  # no error: `Safe` is assignable to `HasMethod`
    |
-info: A runtime `isinstance()` check against a protocol only verifies the presence of required members, not their types. This means the check can pass for objects that are not actually assignable to the protocol
+info: `AttributeOverlap` has all the members of `HasMethod`, but with incompatible types
+info: A runtime `isinstance()` check against a protocol only checks for the presence of the required methods, not their type signatures
 info: rule `unsafe-isinstance-narrowing` is enabled by default
 
 ```
 
 ```
-error[unsafe-isinstance-narrowing]: `issubclass()` check against protocol `HasMethod` will always pass at runtime but is unsafe because `UnsafeOverlap` has all members of `HasMethod` with incompatible types
+error[unsafe-isinstance-narrowing]: `UnsafeOverlap` has an unsafe overlap with protocol `HasMethod`
   --> src/mdtest_snippet.py:34:5
    |
 32 |     isinstance(a, HasName)  # no error: `UnsafeOverlap` doesn't have `name`
 33 | def check_issubclass():
 34 |     issubclass(UnsafeOverlap, HasMethod)  # error: [unsafe-isinstance-narrowing]
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `UnsafeOverlap` has an unsafe overlap with protocol `HasMethod`
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ This `issubclass()` check will always pass at runtime
 35 |     issubclass(NoOverlap, HasMethod)  # no error
 36 |     issubclass(Safe, HasMethod)  # no error
    |
-info: A runtime `isinstance()` check against a protocol only verifies the presence of required members, not their types. This means the check can pass for objects that are not actually assignable to the protocol
+info: `UnsafeOverlap` has all the members of `HasMethod`, but with incompatible types
+info: A runtime `isinstance()` check against a protocol only checks for the presence of the required methods, not their type signatures
 info: rule `unsafe-isinstance-narrowing` is enabled by default
 
 ```
 
 ```
-error[unsafe-isinstance-narrowing]: `isinstance()` check against protocol `HasMethod` will always pass at runtime but is unsafe because `AttributeOverlap` has all members of `HasMethod` with incompatible types
+error[unsafe-isinstance-narrowing]: `AttributeOverlap` has an unsafe overlap with protocol `HasMethod`
   --> src/mdtest_snippet.py:44:5
    |
 42 |     # error: [unsafe-isinstance-narrowing]
 43 |     # error: [unsafe-isinstance-narrowing]
 44 |     isinstance(a, (HasMethod, NonDataProtocol))
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AttributeOverlap` has an unsafe overlap with protocol `HasMethod`
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ This `isinstance()` check will always pass at runtime
 45 | def check_union(x: UnsafeOverlap | int):
 46 |     isinstance(x, HasMethod)  # error: [unsafe-isinstance-narrowing]
    |
-info: A runtime `isinstance()` check against a protocol only verifies the presence of required members, not their types. This means the check can pass for objects that are not actually assignable to the protocol
+info: `AttributeOverlap` has all the members of `HasMethod`, but with incompatible types
+info: A runtime `isinstance()` check against a protocol only checks for the presence of the required methods, not their type signatures
 info: rule `unsafe-isinstance-narrowing` is enabled by default
 
 ```
 
 ```
-error[unsafe-isinstance-narrowing]: `isinstance()` check against protocol `NonDataProtocol` will always pass at runtime but is unsafe because `AttributeOverlap` has all members of `NonDataProtocol` with incompatible types
+error[unsafe-isinstance-narrowing]: `AttributeOverlap` has an unsafe overlap with protocol `NonDataProtocol`
   --> src/mdtest_snippet.py:44:5
    |
 42 |     # error: [unsafe-isinstance-narrowing]
 43 |     # error: [unsafe-isinstance-narrowing]
 44 |     isinstance(a, (HasMethod, NonDataProtocol))
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AttributeOverlap` has an unsafe overlap with protocol `NonDataProtocol`
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ This `isinstance()` check will always pass at runtime
 45 | def check_union(x: UnsafeOverlap | int):
 46 |     isinstance(x, HasMethod)  # error: [unsafe-isinstance-narrowing]
    |
-info: A runtime `isinstance()` check against a protocol only verifies the presence of required members, not their types. This means the check can pass for objects that are not actually assignable to the protocol
+info: `AttributeOverlap` has all the members of `NonDataProtocol`, but with incompatible types
+info: A runtime `isinstance()` check against a protocol only checks for the presence of the required methods, not their type signatures
 info: rule `unsafe-isinstance-narrowing` is enabled by default
 
 ```
 
 ```
-error[unsafe-isinstance-narrowing]: `isinstance()` check against protocol `HasMethod` will always pass at runtime but is unsafe because `UnsafeOverlap` has all members of `HasMethod` with incompatible types
+error[unsafe-isinstance-narrowing]: `UnsafeOverlap` has an unsafe overlap with protocol `HasMethod`
   --> src/mdtest_snippet.py:46:5
    |
 44 |     isinstance(a, (HasMethod, NonDataProtocol))
 45 | def check_union(x: UnsafeOverlap | int):
 46 |     isinstance(x, HasMethod)  # error: [unsafe-isinstance-narrowing]
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^ `UnsafeOverlap` has an unsafe overlap with protocol `HasMethod`
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^ This `isinstance()` check will always pass at runtime
 47 |
 48 | def check_union_no_overlap(x: NoOverlap | int):
    |
-info: A runtime `isinstance()` check against a protocol only verifies the presence of required members, not their types. This means the check can pass for objects that are not actually assignable to the protocol
+info: `UnsafeOverlap` has all the members of `HasMethod`, but with incompatible types
+info: A runtime `isinstance()` check against a protocol only checks for the presence of the required methods, not their type signatures
 info: rule `unsafe-isinstance-narrowing` is enabled by default
 
 ```

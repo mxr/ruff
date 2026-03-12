@@ -4364,21 +4364,18 @@ pub(crate) fn report_unsafe_isinstance_narrowing<'db>(
     let function_name = function.name();
     let subject_display = subject_type.display(db);
     let mut diagnostic = builder.into_diagnostic(format_args!(
-        "`{function_name}()` check against protocol `{protocol_name}` \
-        will always pass at runtime but is unsafe because `{subject_display}` \
-        has all members of `{protocol_name}` with incompatible types",
-    ));
-    diagnostic.set_concise_message(format_args!(
-        "Unsafe `{function_name}()` narrowing: `{subject_display}` has \
-        an unsafe overlap with `{protocol_name}`"
+        "`{subject_display}` has an unsafe overlap with protocol `{protocol_name}`",
     ));
     diagnostic.set_primary_message(format_args!(
-        "`{subject_display}` has an unsafe overlap with protocol `{protocol_name}`"
+        "This `{function_name}()` check will always pass at runtime"
+    ));
+    diagnostic.info(format_args!(
+        "`{subject_display}` has all the members of `{protocol_name}`, \
+        but with incompatible types"
     ));
     diagnostic.info(
-        "A runtime `isinstance()` check against a protocol only verifies the presence of \
-        required members, not their types. This means the check can pass for objects \
-        that are not actually assignable to the protocol",
+        "A runtime `isinstance()` check against a protocol only checks \
+        for the presence of the required methods, not their type signatures",
     );
 }
 
